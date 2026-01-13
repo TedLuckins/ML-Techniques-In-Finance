@@ -1,0 +1,88 @@
+import numpy as np
+import pandas as pd
+from scipy.integrate import quad
+from numba import njit
+
+
+# Heston Model characteristic function
+@njit
+def heston_char(kappa, v0, eta, rho, T, theta, u, k, Ft):
+    beta = kappa - 1j * eta * rho * u
+    d = np.sqrt(beta ** 2 + eta ** 2 * (u ** 2 + 1j * u))
+    g = (beta - d) / (beta + d)
+    D = ((beta - d) / eta ** 2) * (1 - np.exp(-d * T)) / (1 - g * np.exp(-d * T))
+    C = kappa * theta / eta ** 2 * (((beta - d) * T) - 2 * np.log((1 - g * np.exp(-d * T)) / (1 - g)))
+    return np.exp(C + (v0 * D))
+
+@njit
+def integrand(u, v0, eta, rho, T, theta, k, kappa, Ft):
+    integral_val = np.exp(1j * u * np.log(Ft / k)) * heston_char(kappa, v0, eta, rho, T, theta, u - 1j / 2, k, Ft)
+    integral_val = np.real(integral_val)
+    integral_val = integral_val * 1 / (u ** 2 + 1 / 4)
+    return integral_val
+
+
+def heston_call(kappa, v0, eta, rho, T, theta, k, Ft, r):
+    integral, _ = quad(integrand, 0, np.inf, args=(v0, eta, rho, T, theta, k, kappa, Ft))
+    return np.exp(-r * T) * (Ft - 1 / np.pi * np.sqrt(Ft * k) * integral)
+
+
+# Heston parameter ranges
+v0_range = [0.01, 1]
+eta_range = [0.1, 1]
+rho_range = [-1, 1]
+theta_range = [0.01, 1]
+kappa_range = [0.01, 5]
+r = 0.0
+
+# Loads the dataset
+data = pd.read_csv(
+    "C:\\Users\\ted_l\\OneDrive - Loughborough University\\Year 3 Group Project\\Jose-Sample-Surfaces.csv")
+data.columns = data.columns.str.strip()
+forward = data["Forward"].values
+expiry = data["Expiry"].values
+strike = data["Strike"].values
+
+output_rows = []
+
+# Number of random Heston parameter sets generated for each data point
+num_repeats = 1000
+for i in range(len(forward)):
+    for _ in range(num_repeats):
+        v0 = np.random.uniform(*v0_range)
+        eta = np.random.uniform(*eta_range)
+        rho = np.random.uniform(*rho_range)
+        theta = np.random.uniform(*theta_range)
+        kappa = np.random.uniform(*kappa_range)
+
+        price = heston_call(
+            kappa=kappa,
+            v0=v0,
+            eta=eta,
+            rho=rho,
+            T=expiry[i],
+            theta=theta,
+            k=strike[i],
+            Ft=forward[i],
+            r=r,
+        )
+
+        output_rows.append({
+            "Strike": strike[i],
+            "Forward": forward[i],
+            "Expiry": expiry[i],
+            "v0": v0,
+            "eta": eta,
+            "rho": rho,
+            "theta": theta,
+            "kappa": kappa,
+            "Option_Price": price
+        })
+
+# Creates the DataFrame
+output_data = pd.DataFrame(output_rows)
+
+# Outputs all data to a CSV File
+output_file = "heston_model_random_parameters.csv"
+output_data.to_csv(output_file, index=False)
+print(f"Results saved to {output_file}")
