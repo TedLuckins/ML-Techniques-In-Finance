@@ -1,0 +1,169 @@
+import numpy as np
+import pandas as pd
+import QuantLib as ql
+import time
+import random
+
+start_time = time.time()
+
+# Heston pricing using QuantLib
+def heston_call_quantlib(kappa, v0, eta, rho, T, theta, K, S0, r):
+    today = ql.Date().todaysDate()
+    ql.Settings.instance().evaluationDate = today
+    reference_date = today
+    risk_free_curve = ql.YieldTermStructureHandle(
+        ql.FlatForward(reference_date, ql.QuoteHandle(ql.SimpleQuote(float(r))), ql.Actual360())
+    )
+    spot = ql.QuoteHandle(ql.SimpleQuote(float(S0)))
+    dividend_curve = ql.YieldTermStructureHandle(
+        ql.FlatForward(reference_date, ql.QuoteHandle(ql.SimpleQuote(0.0)), ql.Actual360())
+    )
+    v0 = max(float(v0), 1e-6)
+    process = ql.HestonProcess(risk_free_curve, dividend_curve, spot, v0, float(kappa), float(theta), float(eta), float(rho))
+    model = ql.HestonModel(process)
+    engine = ql.AnalyticHestonEngine(model)
+    maturity_date = reference_date + int(T * 365)
+    option = ql.VanillaOption(
+        ql.PlainVanillaPayoff(ql.Option.Call, float(K)),
+        ql.EuropeanExercise(maturity_date)
+    )
+    option.setPricingEngine(engine)
+    return option.NPV()
+
+# Implied volatility using QuantLib
+def implied_volatility_quantlib(price, S, K, T, r):
+    S, K, T, r, price = map(float, [S, K, T, r, price])
+    today = ql.Date().todaysDate()
+    ql.Settings.instance().evaluationDate = today
+    risk_free_curve = ql.YieldTermStructureHandle(
+        ql.FlatForward(today, ql.QuoteHandle(ql.SimpleQuote(r)), ql.Actual360())
+    )
+    payoff = ql.PlainVanillaPayoff(ql.Option.Call, K)
+    expiry_date = today + int(T * 365)
+    exercise = ql.EuropeanExercise(expiry_date)
+    option = ql.VanillaOption(payoff, exercise)
+    spot_handle = ql.QuoteHandle(ql.SimpleQuote(S))
+    flat_vol_handle = ql.BlackVolTermStructureHandle(
+        ql.BlackConstantVol(today, ql.NullCalendar(), ql.QuoteHandle(ql.SimpleQuote(0.2)), ql.Actual360())
+    )
+    bs_process = ql.BlackScholesProcess(spot_handle, risk_free_curve, flat_vol_handle)
+    option.setPricingEngine(ql.AnalyticEuropeanEngine(bs_process))
+    try:
+        iv = option.impliedVolatility(price, bs_process, 1e-6, 100, 1e-9, 5.0)
+        return iv
+    except RuntimeError:
+        return np.nan
+
+# Round to 1 significant figure
+def round_to_1sf(x):
+    if x == 0:
+        return 0
+    return round(x, -int(np.floor(np.log10(abs(x)))))
+
+# Gets best step size
+def get_nearest_step(target_step):
+    valid_steps = [0.1, 0.5, 1, 5, 10, 25, 50, 100]
+    return min(valid_steps, key=lambda x: abs(x - target_step))
+
+# Generate realistic option contracts
+def Generate_Option_Data(r, num_spots, min_expiries, max_expiries, min_strikes, max_strikes, output_file):
+    spot_prices = np.random.uniform(100, 100, num_spots)
+
+    def check_feller_condition(kappa, eta, theta):
+        return 2 * kappa * theta >= eta ** 2
+
+    rho_range = [-0.7, -0.3]
+    kappa_range = [1, 3]
+    theta_range = [0.05, 0.1]
+    v0_range = [0.01, 0.03]
+    eta_range = [0.4, 1.5]
+
+
+
+
+    data = []
+    Counter = 0
+
+    for sample_num, spot in enumerate(spot_prices, 1):
+        num_expiries = random.randint(min_expiries, max_expiries)
+
+        min_days, max_days = 4, 7300
+        log_expiries_days = np.exp(np.linspace(np.log(min_days), np.log(max_days), num_expiries))
+        log_expiries_days += np.random.uniform(-50, 50, size=num_expiries)
+        log_expiries_days = np.clip(log_expiries_days, min_days, max_days)
+        log_expiries_days = np.round(log_expiries_days).astype(int)
+        log_expiries_days = np.unique(log_expiries_days)
+
+        if log_expiries_days[0] < 4:
+            log_expiries_days[0] = random.randint(4, 12)
+
+        expiries = log_expiries_days / 365.0
+
+        Counter += 1
+        Time = time.time() - start_time
+        print(f"Surface {Counter} at time {Time:.2f}s")
+
+        # while True:
+        #     v0 = np.random.uniform(*v0_range)
+        #     eta = np.random.uniform(*eta_range)
+        #     rho = np.random.uniform(*rho_range)
+        #     theta = np.random.uniform(*theta_range)
+        #     kappa = np.random.uniform(*kappa_range)
+        #
+        #     if check_feller_condition(kappa, eta, theta):
+        #         break
+
+        v0 = np.random.uniform(*v0_range)
+        eta = np.random.uniform(*eta_range)
+        rho = np.random.uniform(*rho_range)
+        theta = np.random.uniform(*theta_range)
+        kappa = np.random.uniform(*kappa_range)
+
+
+
+        for expiry in expiries:
+            forward_price = spot * np.exp(r * expiry)
+
+            num_strikes = random.randint(min_strikes, max_strikes)
+            half = (num_strikes - 2) // 2
+
+            raw_step = spot / (num_strikes - 2)
+            step = get_nearest_step(raw_step)
+
+            centre_strike = round(spot / step) * step
+
+            strikes = [centre_strike + step * (i - half) for i in range(num_strikes - 2)]
+
+            step = step * 0.5
+            # centre_strike = round(spot / step) * step
+
+            strikes += [centre_strike - step, centre_strike + step]
+
+            strikes = sorted([round(s, 2) for s in strikes])
+
+            for strike in strikes:
+                price = heston_call_quantlib(kappa, v0, eta, rho, expiry, theta, strike, spot, r)
+                if price <= 0 or np.isnan(price):
+                    continue
+                implied_vol = implied_volatility_quantlib(price, spot, strike, expiry, r)
+                if np.isnan(implied_vol) or implied_vol == 1.0e-9:
+                    continue
+
+                data.append([
+                    sample_num, spot, forward_price, expiry, strike,
+                    v0, eta, rho, theta, kappa, price, implied_vol
+                ])
+
+    df = pd.DataFrame(data, columns=[
+        "Sample", "Spot", "Forward", "Expiry", "Strike",
+        "v0", "eta", "rho", "theta", "kappa", "Option_Price", "Implied_Volatility"
+    ])
+
+    df.to_csv(output_file, index=False)
+    print(f"Data saved to {output_file}")
+
+# Run the generator
+Generate_Option_Data(0.05, 10000, 30, 30, 13, 13, "Standard_Surfaces_30x13_Test_10000_no-fel.csv")
+
+end_time = time.time()
+print(f"Simulation completed in {end_time - start_time:.2f} seconds.")
